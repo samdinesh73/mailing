@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 
 const Color primaryColor = Color(0xFF0088CC);
 
@@ -57,6 +59,7 @@ class _MailScreenState extends State<MailScreen>
   TextEditingController? _manualTemplateController;
   String _selectedTemplate = 'bulk';
   late TabController _tabController;
+  List<PlatformFile> attachedFiles = [];
 
   @override
   void initState() {
@@ -114,22 +117,38 @@ class _MailScreenState extends State<MailScreen>
               : 'bulk')
           : _selectedTemplate;
 
-      final response = await http.post(
+      // Create multipart request
+      final request = http.MultipartRequest(
+        'POST',
         Uri.parse('https://api.mailgun.net/v3/$domain/messages'),
-        headers: {
-          'Authorization': basicAuth,
-        },
-        body: {
-          'from': 'Oliver <hello@$domain>',
-          'to': recipientEmail,
-          'subject': subject,
-          'template': template,
-          "h:X-Mailgun-Variables": jsonEncode({
-            'subject': subject,
-            'test': "test",
-          }),
-        },
       );
+
+      request.headers['Authorization'] = basicAuth;
+
+      // Add form fields
+      request.fields['from'] = 'Oliver <hello@$domain>';
+      request.fields['to'] = recipientEmail;
+      request.fields['subject'] = subject;
+      request.fields['template'] = template;
+      request.fields['h:X-Mailgun-Variables'] = jsonEncode({
+        'subject': subject,
+        'test': "test",
+      });
+
+      // Add attachments
+      for (final file in attachedFiles) {
+        if (file.bytes != null) {
+          request.files.add(
+            http.MultipartFile.fromBytes(
+              'attachment',
+              file.bytes!,
+              filename: file.name,
+            ),
+          );
+        }
+      }
+
+      final response = await request.send();
 
       if (response.statusCode == 200) {
         final now = DateTime.now();
@@ -145,6 +164,7 @@ class _MailScreenState extends State<MailScreen>
             ),
           );
           isLoading = false;
+          attachedFiles.clear();
         });
 
         if (mounted) {
@@ -161,10 +181,11 @@ class _MailScreenState extends State<MailScreen>
           isLoading = false;
         });
 
+        final responseBody = await response.stream.bytesToString();
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text("Failed: ${response.body}"),
+              content: Text("Failed: $responseBody"),
               backgroundColor: Colors.red,
             ),
           );
@@ -184,6 +205,34 @@ class _MailScreenState extends State<MailScreen>
         );
       }
     }
+  }
+
+  Future<void> _pickFiles() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        allowMultiple: true,
+        type: FileType.any,
+      );
+
+      if (result != null) {
+        setState(() {
+          attachedFiles.addAll(result.files);
+        });
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Error picking files: $e"),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  void _removeAttachment(int index) {
+    setState(() {
+      attachedFiles.removeAt(index);
+    });
   }
 
   @override
@@ -306,6 +355,10 @@ class _MailScreenState extends State<MailScreen>
                 keyboardType: TextInputType.text,
               ),
             ],
+            const SizedBox(height: 24),
+            _buildInputLabel('Attachments'),
+            const SizedBox(height: 12),
+            _buildAttachmentSection(),
             const SizedBox(height: 40),
             _buildSendButton(),
             const SizedBox(height: 20),
@@ -425,6 +478,123 @@ class _MailScreenState extends State<MailScreen>
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildAttachmentSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Add attachment button
+        GestureDetector(
+          onTap: _pickFiles,
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8F9FA),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: primaryColor.withOpacity(0.3),
+                width: 2,
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(
+                  Icons.attach_file,
+                  color: primaryColor,
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Add Attachments',
+                  style: TextStyle(
+                    color: primaryColor,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (attachedFiles.isNotEmpty)
+                  Text(
+                    ' (${attachedFiles.length})',
+                    style: TextStyle(
+                      color: primaryColor.withOpacity(0.7),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        // List of attached files
+        if (attachedFiles.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          ...List.generate(
+            attachedFiles.length,
+            (index) {
+              final file = attachedFiles[index];
+              return Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8F9FA),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: const Color(0xFFE0E0E0),
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.file_present,
+                      color: primaryColor,
+                      size: 18,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            file.name,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF333333),
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '${(file.size / 1024).toStringAsFixed(2)} KB',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF999999),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () => _removeAttachment(index),
+                      child: const Icon(
+                        Icons.close,
+                        color: Color(0xFFCC0000),
+                        size: 18,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ],
+      ],
     );
   }
 
